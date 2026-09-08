@@ -125,7 +125,12 @@ done
 # smaller size: it is roughly an order of magnitude slower, and at 4096 it would
 # dominate the whole sweep. Without this the plots show blocked-vs-streaming but
 # never show what either is an improvement *over*.
-measure "p1_naive_n${P1_SMALL}" p1_matsq --algo naive --n "$P1_SMALL"
+# One thread only. `naive` carries no omp pragma -- it is the correctness
+# oracle, serial by construction -- so sweeping it across thread counts would
+# re-measure the same serial number 45 times and draw a flat 1.0 line on the
+# speedup plot. Its argument lives on the runtime plot, where it sits an order
+# of magnitude above everything else.
+THREADS=1 measure "p1_naive_n${P1_SMALL}" p1_matsq --algo naive --n "$P1_SMALL"
 
 echo "--- problem 2: X^15 ---" >&2
 measure "p2_chain_n${P2_N}"       p2_xpow15 --n "$P2_N" --chain opt   --cmul 3
