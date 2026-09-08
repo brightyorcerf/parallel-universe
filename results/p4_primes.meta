@@ -1,0 +1,7 @@
+program=p4_primes
+args=--low 1099511627776 --high 1099780063232
+seq_time=0.259015
+seq_sum=0x000000000093bfa0
+reps=2
+host=192.168.1.5 Darwin x86_64
+date=2026-09-07T13:35:49Z
