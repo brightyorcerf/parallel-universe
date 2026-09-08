@@ -1,0 +1,5 @@
+bin/
+*.o
+*.zip
+.DS_Store
+__pycache__/
