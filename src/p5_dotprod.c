@@ -110,8 +110,13 @@ int main(int argc, char **argv)
         fprintf(stderr, "verify: parallel=%lld sequential=%lld\n", (long long)dot,
                 (long long)ref);
 
-    char extra[64];
-    snprintf(extra, sizeof extra, "dot=%lld", (long long)dot);
+    /* This kernel is bandwidth-bound, so runtime alone does not say whether it
+     * is good -- effective bandwidth does. Two int8 vectors means 2n bytes must
+     * cross the bus; comparing GB/s against the machine's peak is what shows
+     * the kernel is saturating memory rather than merely being fast. */
+    char         extra[96];
+    const double gbps = (2.0 * (double)n) / ((t2 - t1) * 1e9);
+    snprintf(extra, sizeof extra, "dot=%lld gbps=%.3f", (long long)dot, gbps);
 
     result_t r = { .problem = "p5",
                    .variant = "reduction",

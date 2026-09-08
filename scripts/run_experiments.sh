@@ -121,6 +121,11 @@ for n in "$P1_SMALL" "$P1_LARGE"; do
         measure "p1_bmm_n${n}_b${b}" p1_matsq --algo bmm --block "$b" --n "$n"
     done
 done
+# Textbook i-j-k, no loop reordering and no {-1,0,1} specialisation. Only at the
+# smaller size: it is roughly an order of magnitude slower, and at 4096 it would
+# dominate the whole sweep. Without this the plots show blocked-vs-streaming but
+# never show what either is an improvement *over*.
+measure "p1_naive_n${P1_SMALL}" p1_matsq --algo naive --n "$P1_SMALL"
 
 echo "--- problem 2: X^15 ---" >&2
 measure "p2_chain_n${P2_N}"       p2_xpow15 --n "$P2_N" --chain opt   --cmul 3
@@ -138,6 +143,18 @@ echo "--- problem 4: primes ---" >&2
 # the exception because of what it costs to redo.
 measure "p4_primes" p4_primes --low "$P4_LOW" --high "$P4_HIGH" \
     || echo "!! p4 failed verification -- continuing so later problems still run" >&2
+
+# Same sieve, same range, one deliberately bad parameter: a 64 MB segment does
+# not fit any cache, so every pass streams from DRAM. This is what turns "the
+# segments are sized for L2" from a claim in a comment into a measurement.
+# Run at the quick range regardless of mode -- the point is the ratio, and
+# paying for a second full-range sieve to show it is not worth six more hours.
+measure "p4_primes_bigseg" p4_primes --low 1099511627776 \
+    --high $((1099511627776 + 268435456)) --segbytes $((64 * 1024 * 1024)) \
+    || echo "!! p4 big-segment control failed -- continuing" >&2
+measure "p4_primes_l2seg" p4_primes --low 1099511627776 \
+    --high $((1099511627776 + 268435456)) \
+    || echo "!! p4 l2-segment control failed -- continuing" >&2
 
 echo "--- problem 5: dot product ---" >&2
 measure "p5_dot_n${P5_N}" p5_dotprod --n "$P5_N"
