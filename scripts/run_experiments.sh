@@ -130,7 +130,12 @@ done
 # re-measure the same serial number 45 times and draw a flat 1.0 line on the
 # speedup plot. Its argument lives on the runtime plot, where it sits an order
 # of magnitude above everything else.
-THREADS=1 measure "p1_naive_n${P1_SMALL}" p1_matsq --algo naive --n "$P1_SMALL"
+# Subshell rather than a `THREADS=1 measure ...` prefix: under a POSIX shell an
+# assignment preceding a function call persists after it, which would silently
+# sweep every later problem at one thread and produce a complete-looking
+# workbook with a single row per problem. measure writes files, not shell
+# state, so the subshell costs nothing.
+( THREADS=1; measure "p1_naive_n${P1_SMALL}" p1_matsq --algo naive --n "$P1_SMALL" )
 
 echo "--- problem 2: X^15 ---" >&2
 measure "p2_chain_n${P2_N}"       p2_xpow15 --n "$P2_N" --chain opt   --cmul 3
