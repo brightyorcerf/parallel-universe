@@ -1,0 +1,7 @@
+program=p1_matsq
+args=--algo naive --n 2048
+seq_time=19.119197
+seq_sum=0x90f8246b45049108
+reps=5
+host=inhydmupc0910-l Linux x86_64
+date=2026-09-09T10:49:13Z

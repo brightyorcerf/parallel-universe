@@ -1,0 +1,7 @@
+program=p3_sort
+args=--algo merge --n 200000000
+seq_time=18.199727
+seq_sum=0x339a00e7b5e288f7
+reps=5
+host=inhydmupc0910-l Linux x86_64
+date=2026-09-09T11:39:22Z

@@ -1,7 +1,7 @@
 program=p1_matsq
 args=--algo omm --n 768
-seq_time=0.026292
+seq_time=0.020788
 seq_sum=0x426307c3d646c2a5
 reps=2
-host=192.168.1.5 Darwin x86_64
-date=2026-09-07T13:35:31Z
+host=inhydmupc0910-l Linux x86_64
+date=2026-09-09T09:44:46Z

@@ -1,0 +1,7 @@
+program=p4_primes
+args=--low 1099511627776 --high 1099780063232 --segbytes 67108864
+seq_time=0.446460
+seq_sum=0x000000000093bfa0
+reps=5
+host=inhydmupc0910-l Linux x86_64
+date=2026-09-09T15:34:02Z

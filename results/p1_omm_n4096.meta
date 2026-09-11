@@ -1,0 +1,7 @@
+program=p1_matsq
+args=--algo omm --n 4096
+seq_time=8.633676
+seq_sum=0xb306ec1cbe3c39fc
+reps=5
+host=inhydmupc0910-l Linux x86_64
+date=2026-09-09T09:51:46Z

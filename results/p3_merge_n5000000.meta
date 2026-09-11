@@ -1,7 +1,7 @@
 program=p3_sort
 args=--algo merge --n 5000000
-seq_time=0.528072
+seq_time=0.442411
 seq_sum=0xf84ebd139b64b1c0
 reps=2
-host=192.168.1.5 Darwin x86_64
-date=2026-09-07T13:35:46Z
+host=inhydmupc0910-l Linux x86_64
+date=2026-09-09T09:44:51Z

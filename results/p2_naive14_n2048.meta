@@ -1,0 +1,7 @@
+program=p2_xpow15
+args=--n 2048 --chain naive --cmul 4
+seq_time=122.168890
+seq_sum=0xce02a071946c2d7f
+reps=5
+host=inhydmupc0910-l Linux x86_64
+date=2026-09-09T11:01:50Z

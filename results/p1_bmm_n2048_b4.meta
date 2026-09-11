@@ -1,0 +1,7 @@
+program=p1_matsq
+args=--algo bmm --block 4 --n 2048
+seq_time=13.001284
+seq_sum=0x90f8246b45049108
+reps=5
+host=inhydmupc0910-l Linux x86_64
+date=2026-09-09T09:45:58Z

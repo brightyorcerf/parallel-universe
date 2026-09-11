@@ -1,7 +1,7 @@
 program=p5_dotprod
 args=--n 20000000
-seq_time=0.002696
+seq_time=0.002340
 seq_sum=0xffffffffffffff83
 reps=2
-host=192.168.1.5 Darwin x86_64
-date=2026-09-07T13:35:51Z
+host=inhydmupc0910-l Linux x86_64
+date=2026-09-09T09:45:01Z

@@ -8,5 +8,7 @@ set key outside right top
 set grid
 set xtics (1,2,4,6,8,10,12,14,16)
 set logscale y
-plot 'plots/data/p3_counting_n5000000.dat' using 1:2 with linespoints lw 2 pt 7 title 'counting sort', \
+plot 'plots/data/p3_counting_n1000000000.dat' using 1:2 with linespoints lw 2 pt 7 title 'counting sort', \
+     'plots/data/p3_counting_n5000000.dat' using 1:2 with linespoints lw 2 pt 7 title 'counting sort', \
+     'plots/data/p3_merge_n200000000.dat' using 1:2 with linespoints lw 2 pt 7 title 'parallel merge sort', \
      'plots/data/p3_merge_n5000000.dat' using 1:2 with linespoints lw 2 pt 7 title 'parallel merge sort'

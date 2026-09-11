@@ -7,6 +7,8 @@ set ylabel 'Speedup vs 1 thread'
 set key outside right top
 set grid
 set xtics (1,2,4,6,8,10,12,14,16)
-plot 'plots/data/p2_chain_n256.dat' using 1:3 with linespoints lw 2 pt 7 title 'addition chain + 3-mult complex', \
+plot 'plots/data/p2_chain_n2048.dat' using 1:3 with linespoints lw 2 pt 7 title 'addition chain + 3-mult complex', \
+     'plots/data/p2_chain_n256.dat' using 1:3 with linespoints lw 2 pt 7 title 'addition chain + 3-mult complex', \
+     'plots/data/p2_naive14_n2048.dat' using 1:3 with linespoints lw 2 pt 7 title '14 successive + 4-mult complex', \
      'plots/data/p2_naive14_n256.dat' using 1:3 with linespoints lw 2 pt 7 title '14 successive + 4-mult complex', \
      x with lines lw 1 dt 2 lc rgb '#888888' title 'ideal (linear)'
