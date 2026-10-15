@@ -1,0 +1,109 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>HPC Assignment 2 Report</title>
+<style>
+body{font-family:Helvetica,Arial,sans-serif;font-size:11pt;line-height:1.45;max-width:180mm;margin:auto;color:#111}
+h1{font-size:20pt;margin-bottom:0} h2{font-size:14pt;border-bottom:1px solid #999;margin-top:1.6em} h3{font-size:11.5pt}
+table{border-collapse:collapse;font-size:7.5pt;width:100%;margin-bottom:1em;page-break-inside:auto} td,th{border:1px solid #bbb;padding:2px 3px;text-align:right}
+td:first-child,td:nth-child(2){text-align:left} tr{page-break-inside:avoid}
+figure{margin:1em 0;page-break-inside:avoid} figure img{width:100%} figcaption{font-size:9pt;text-align:center;color:#444}
+code{font-size:9.5pt} .lp td{text-align:left;font-size:9pt}
+</style></head><body>
+<h1>Concurrent Data Structures in Java: Lazy and Non-Blocking Synchronization</h1>
+<p>HPC Programming Assignment 2<br>
+Tejaansh (SE23UCSE174) &middot; Pallavi (SE23UCSE135)</p>
+
+<h2>1. Overview</h2>
+<p>Seven Java implementations were built and benchmarked: a lazy and a lock-free doubly linked list, a lazy lock-based stack and a Treiber stack,
+a two-lock queue and a Michael-Scott queue, and an elimination backoff stack built on the Treiber stack. All of them implement one small interface
+(<code>read/insert/delete</code>) so a single harness (<code>Bench.java</code>) drives every experiment. <code>Check.java</code> is a multi-threaded
+correctness test: it checks set semantics, that prev links mirror next links, and that every pushed or enqueued value is removed exactly once.</p>
+
+<h2>2. Implementations</h2>
+<h3>2.1 Lazy doubly linked list (<code>LazyDList</code>)</h3>
+<p>The list is sorted, with sentinels <code>head</code> (MIN) and <code>tail</code> (MAX). Each node has <code>key</code>, volatile <code>next</code>, <code>prev</code> and <code>marked</code>, plus a <code>ReentrantLock</code>.
+A thread traverses <code>next</code> links without locking, locks <code>pred</code> and then <code>curr</code>, and validates <code>!pred.marked &amp;&amp; !curr.marked &amp;&amp; pred.next == curr</code>. If validation fails, it retries.
+Insert sets <code>node.next=curr, node.prev=pred</code>, then <code>pred.next=node</code>, then <code>curr.prev=node</code>. Delete first marks <code>curr</code> (logical deletion), then unlinks it (physical deletion) with <code>pred.next=succ; succ.prev=pred</code>.
+The <code>prev</code> links stay consistent because a node's <code>prev</code> is only written by a thread that holds the lock of that node's predecessor. While a thread holds <code>curr</code>'s lock, nobody else can change <code>succ.prev</code>.
+<code>contains()</code> is wait-free and takes no locks.</p>
+
+<h3>2.2 Non-blocking doubly linked list (<code>LockFreeDList</code>)</h3>
+<p>This list uses the Harris-Michael design. Each <code>next</code> field is an <code>AtomicMarkableReference</code>, so the successor and the deleted mark change together in one CAS.
+Delete marks <code>curr.next</code> with <code>compareAndSet(succ, succ, false, true)</code> (logical deletion), then tries to unlink with a CAS on <code>pred.next</code> (physical deletion).
+<code>attemptMark</code> is deliberately not used: it returns true when the node is already marked, which would let two deleters both report success.
+<code>find()</code> helps other threads. Any marked node it passes is unlinked with a CAS. If that CAS fails, the traversal restarts from <code>head</code>, and every failed insert or delete CAS also retries.
+The <code>prev</code> pointers are updated after each successful link or unlink, but correctness never depends on them; the <code>next</code> chain is the authoritative structure. This avoids the multi-word CAS that a fully lock-free, symmetric doubly linked list would need.
+No locks appear on any update path.</p>
+
+<h3>2.3 Lazy lock-based stack (<code>LockStack</code>)</h3>
+<p>Push and pop read <code>top</code> without the lock and prepare the new node (<code>node.next = observed</code>). They then take the lock, check <code>top == observed</code>, and only then publish. If the check fails, they retry.
+A pop that reads an empty stack returns without locking. <code>peek()</code> is a single volatile read.</p>
+
+<h3>2.4 Treiber stack (<code>TreiberStack</code>)</h3>
+<p><code>top</code> is an <code>AtomicReference</code>. Push links the new node to the observed top and tries <code>CAS(top, oldTop, node)</code>. Pop tries <code>CAS(top, oldTop, oldTop.next)</code>. Both retry when the CAS fails.
+Java's garbage collector prevents ABA, because a node cannot be reused while any thread still references it.</p>
+
+<h3>2.5 Two-lock queue (<code>LockQueue</code>)</h3>
+<p>The queue starts with a sentinel node and uses separate <code>headLock</code> and <code>tailLock</code>, so one enqueuer and one dequeuer can run at the same time. Enqueue appends under <code>tailLock</code>.
+Dequeue reads <code>head</code> and <code>head.next</code> without the lock. It returns empty if <code>head.next</code> is null; otherwise it takes <code>headLock</code>, checks that <code>head</code> is unchanged, and advances <code>head</code>. If the check fails, it retries.</p>
+
+<h3>2.6 Michael-Scott queue (<code>MSQueue</code>)</h3>
+<p><code>head</code>, <code>tail</code> and every <code>next</code> field are <code>AtomicReference</code>s. Enqueue CASes <code>last.next</code> from null to the new node, then tries to swing <code>tail</code>.
+Any thread that finds <code>tail</code> lagging behind (<code>tail.next != null</code>) helps by advancing it. Dequeue CASes <code>head</code> forward. Peek reads <code>head.next</code> and retries if <code>head</code> changed meanwhile.</p>
+<p><b>GC nepotism (both queues).</b> In a first run of the experiments, queue runs overshot their deadline by up to 0.8 s, and throughput fell steadily over the life of each JVM.
+GC logs showed young-generation pauses of 125&ndash;160 ms and a live heap growing from 95 MB to 290 MB.
+The cause is that a dequeued sentinel promoted to the old generation still points to younger nodes and keeps them alive, so every young collection has to copy the entire queue history.
+Both queues therefore self-link the dead sentinel after a successful dequeue (<code>h.next = h</code>), as <code>java.util.concurrent.ConcurrentLinkedQueue</code> does.
+This is safe because any thread still holding the old node fails its <code>head</code>/<code>tail</code> check and retries. After the fix, the pauses disappeared and all queue experiments were rerun.</p>
+
+<h3>2.7 Elimination backoff stack (<code>EliminationStack</code>)</h3>
+<p>This class extends <code>TreiberStack</code> and reuses its single-attempt <code>tryPush/tryPop</code>. When a CAS on <code>top</code> fails, the thread backs off into an elimination array of 8 lock-free exchangers and picks a slot at random with <code>ThreadLocalRandom</code>.
+Each exchanger is an <code>AtomicStampedReference</code> with three states: EMPTY, WAITING and BUSY. The first thread CASes EMPTY to WAITING and spins. A partner CASes WAITING to BUSY and takes the waiting thread's item.
+Pushes offer their value and pops offer <code>null</code>, so a push that meets a pop completes both operations without touching <code>top</code>. Two pushes or two pops that meet simply retry.
+The backoff policy is a 2&nbsp;&micro;s timeout per visit, after which the thread goes back to the central stack.</p>
+
+<h2>3. Linearization points</h2>
+<table class="lp">
+<tr><th>Structure</th><th>Operation</th><th>Linearization point</th></tr>
+<tr><td>LazyDList</td><td>insert ok / fail</td><td>write <code>pred.next = node</code> / validation that found unmarked <code>curr.key == key</code></td></tr>
+<tr><td></td><td>delete ok / fail</td><td>write <code>curr.marked = true</code> / validation that found <code>curr.key != key</code></td></tr>
+<tr><td></td><td>contains true / false</td><td>read of <code>curr.marked == false</code> / read of first node with key &ge; target, or the moment the matching node was marked, whichever is later</td></tr>
+<tr><td>LockFreeDList</td><td>insert ok / fail</td><td>successful CAS <code>pred.next: curr&rarr;node</code> / read in <code>find()</code> returning unmarked <code>curr</code> with equal key</td></tr>
+<tr><td></td><td>delete ok / fail</td><td>successful CAS marking <code>curr.next</code> / read in <code>find()</code> returning <code>curr.key != key</code></td></tr>
+<tr><td></td><td>contains true / false</td><td>read of the mark bit of <code>curr.next</code> (unmarked) / as for the lazy list</td></tr>
+<tr><td>LockStack</td><td>push / pop / empty pop / peek</td><td>write of <code>top</code> under the lock after validation / same / volatile read <code>top == null</code> / volatile read of <code>top</code></td></tr>
+<tr><td>TreiberStack</td><td>push / pop / empty pop / peek</td><td>successful CAS on <code>top</code> / successful CAS on <code>top</code> / read <code>top == null</code> / read of <code>top</code></td></tr>
+<tr><td>LockQueue</td><td>enqueue / dequeue / empty dequeue / peek</td><td>write <code>tail.next = node</code> / write <code>head = first</code> after validation / read <code>head.next == null</code> / read of <code>head.next</code> confirmed by an unchanged <code>head</code></td></tr>
+<tr><td>MSQueue</td><td>enqueue / dequeue / empty dequeue / peek</td><td>successful CAS <code>last.next: null&rarr;node</code> / successful CAS on <code>head</code> / read <code>first.next == null</code> while <code>head == tail</code> / read of <code>head.next</code> confirmed by an unchanged <code>head</code></td></tr>
+<tr><td>EliminationStack</td><td>push / pop via stack</td><td>as for the Treiber stack</td></tr>
+<tr><td></td><td>eliminated pair</td><td>the partner's successful CAS WAITING&rarr;BUSY; the push is ordered immediately before the pop</td></tr>
+</table>
+
+<h2>4. Experimental methodology</h2>
+<ul>
+<li><b>Grid:</b> 7 implementations &times; N &isin; {1,000, 10,000} &times; 3 workloads (0C-50I-50D, 50C-25I-25D, 100C-0I-0D) &times; threads {1,2,4,6,8,10,12,14,16} &times; 5 runs, for 1,890 timed runs in total.</li>
+<li><b>Run duration (deviation from the brief):</b> each timed run lasts <b>2,000 ms</b> rather than the specified 10,000 ms, to fit the full grid into the available time on a single 4-core machine.
+The duration is a command-line parameter: <code>scripts/run_all.sh 10000 5</code> reruns the whole grid at the specified 10 s. Because throughput is normalised by the measured elapsed time and every run has the same duration, throughput and speedup are computed exactly as specified.</li>
+<li><b>Prefill:</b> before timing, N/2 distinct keys (a shuffled subset of [0, N)) are inserted, pushed or enqueued. List keys are drawn from [0, N), so the 50/50 insert/delete mix keeps the list about 50% full.</li>
+<li><b>Workload generation:</b> before timing, each thread gets a pre-generated array of 2<sup>18</sup> (op, key) entries drawn with the workload's percentages. Threads cycle through it, so no random numbers are generated inside the timed loop.</li>
+<li><b>Timing:</b> each run uses a fresh structure. Threads are created and started first and then wait on a <code>CountDownLatch</code>. The main thread takes <code>start = System.nanoTime()</code>, publishes <code>deadline = start + duration</code>, and opens the latch.
+Each worker runs <code>while (System.nanoTime() &lt; deadline)</code> and executes 64 operations per check, counting completed operations.
+The batching matters. On macOS, HotSpot's <code>System.nanoTime()</code> performs a CAS on one global word to guarantee monotonic time. We measured this capping all threads together at about 30 M calls/s at 1 thread, falling to 26 M at 4 threads.
+With one clock call per operation, every fast structure (stacks, queues, peek) saturated near 29 MOPS regardless of thread count, so the benchmark was measuring the clock rather than the data structure.
+Checking every 64 operations removes that artefact and overshoots the deadline by well under 1 ms of a 2,000 ms run (the measured elapsed time is used in any case). After all threads join, <code>end = System.nanoTime()</code> is taken. Only <code>System.nanoTime()</code> is used for timing.</li>
+<li><b>Metrics:</b> throughput (MOPS) = ops / (elapsed_s &times; 10<sup>6</sup>). P<sub>avg</sub> is the mean of the 5 runs, and speedup(p) = P<sub>avg</sub>(p) / P<sub>avg</sub>(1) for the same implementation, N and workload.</li>
+<li><b>JVM:</b> Java 17 HotSpot with <code>-Xms2g -Xmx2g</code>. One JVM is started per (implementation, N, workload), and a discarded 1-second warm-up run lets the JIT compile the hot paths first. JVM startup, prefill, generation and output are all outside the timed interval.</li>
+<li><b>Hardware:</b> a 4-core Intel Mac (macOS 13) with no SMT (<code>hw.ncpu = 4</code>). Every configuration above 4 threads therefore oversubscribes the CPU, and the OS scheduler time-slices threads. This shapes the results at 6&ndash;16 threads.</li>
+</ul>
+<p>To reproduce: run <code>scripts/run_all.sh</code>, which compiles, runs the grid and resumes where it stopped. Then run <code>python3 scripts/analyze.py</code>, <code>gnuplot scripts/plots.gp</code> and <code>python3 scripts/make_report.py</code>.
+The raw data for every run is in <code>results/raw/*.csv</code> and <code>results/all_runs.csv</code>. Averages and speedups are in <code>results/averages.csv</code>.</p>
+
+<h2>5. Results</h2>
+{{TABLES}}
+{{FIG_dlist}}
+{{FIG_stack}}
+{{FIG_queue}}
+{{FIG_treiber_vs_elimination}}
+
+<h2>6. Analysis</h2>
+{{DISCUSSION}}
+</body></html>

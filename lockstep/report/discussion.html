@@ -1,0 +1,56 @@
+<p>All figures quoted below are 5-run averages, in MOPS. The machine has <b>4 physical cores</b>, so ideal speedup is bounded by 4. Every configuration above 4 threads is oversubscribed and relies on OS time-slicing, which is why every curve is flat from 4 to 16 threads.
+Across all 42 configurations no run collapsed under oversubscription, and the coefficient of variation stayed at or below about 12% (one outlier: lazy list, N=1000, read-only, at 18%).</p>
+
+<h3>6.1 Doubly linked list: lazy vs non-blocking</h3>
+<ul>
+<li><b>Scalability comes from traversal parallelism.</b> A list operation spends almost all of its time walking about N/4 nodes, and walking is read-only, so threads only share cache lines in the Shared state.
+At N=10,000 both lists scale almost linearly up to the core count. At 4 threads the lazy list reaches 3.66&times; (update-only) and 3.81&times; (read-only), and the lock-free list reaches 3.49&times; and 3.70&times;. Conflicts on the same pair of nodes are rare in a list of about 5,000 nodes.</li>
+<li><b>At N=1,000, lock contention limits the lazy list.</b> Update-heavy speedup is only 1.60&times; (0C-50I-50D) and 1.69&times; (50C-25I-25D) at 4 threads, and peaks around 1.8&times;.
+With only about 500 nodes, two threads frequently need overlapping <code>pred/curr</code> locks. A thread that fails validation must re-traverse, and the lock words and <code>marked</code> flags of hot nodes bounce between cores (cache-coherence traffic).
+At 2 threads the lazy list gains nothing (1.35 &rarr; 1.32 MOPS).</li>
+<li><b>The lock-free list scales better at N=1,000</b>: 3.14&times; (0C-50I-50D) and 3.29&times; (50C-25I-25D) at 4 threads. A failed CAS costs only a local retry rather than a blocked thread, and no thread ever waits for a descheduled lock holder.</li>
+<li><b>The lazy list has higher absolute throughput anyway.</b> At N=1,000 and 16 threads it reaches 2.35 MOPS against 1.47 for the lock-free list (update-only), and 8.0 against 3.4 MOPS (read-only).
+Each step of the lock-free traversal goes through an <code>AtomicMarkableReference</code>: node &rarr; reference object &rarr; immutable (ref, mark) pair &rarr; next node. That is about three dependent loads per hop instead of one, and every successful CAS allocates a new pair.
+The lazy list follows plain volatile fields. In other words, the non-blocking version wins on scalability and lock-freedom but pays a constant synchronization overhead per node visited.</li>
+<li><b>The effect of N is algorithmic.</b> Throughput drops by roughly 15roughly 30&ndash;45&times;ndash;40roughly 15&ndash;40&times; from N=1,000 to N=10,000 (e.g. lazy list read-only, 4 threads: 7.0 &rarr; 0.19 MOPS), consistent with O(N) traversal and with the larger list no longer fitting in L1/L2 cache.</li>
+</ul>
+
+<h3>6.2 Stack: lazy lock-based vs Treiber</h3>
+<ul>
+<li><b>Update workloads do not scale for either stack. A stack has one hot spot (<code>top</code>) and serialises all updates.</b> In the update-only workload at N=1,000, the Treiber stack falls from 51.1 MOPS at 1 thread to 14.3 at 2 and 9.6 at 4 (speedup 0.19).
+Every push and pop CASes the same cache line. Under contention most CASes fail (<b>CAS failures and retries</b>), and each attempt forces the line to move between cores in exclusive state, so throughput is set by cache-line transfer latency rather than by core count.</li>
+<li><b>The lock-based stack degrades less: 19.5 MOPS at &ge;4 threads, 2&times; the Treiber stack.</b> Uncontended it is slower (30.7 vs 51.1 MOPS at 1 thread) because each operation pays lock acquire/release on top of the update.
+Under contention, however, the non-fair <code>ReentrantLock</code> lets a running thread re-acquire the lock several times in a row while its cache lines are still local, which effectively batches operations. In the Treiber stack, by contrast, every thread keeps attempting CAS and invalidating the line.
+The worst case for the lock is exactly 2 threads (8.4 MOPS), where hand-offs between the two threads are most frequent.</li>
+<li><b>Read-only (peek) scales up to the core count:</b> about 2.6&times; for Treiber and about 2.0&times; for LockStack at 4 threads, saturating near 1.45&ndash;1.56&times;10<sup>9</sup> ops/s.
+Read-only access keeps <code>top</code> in the Shared state in every core's cache, so no coherence traffic is generated. The sub-linear speedup reflects the per-operation harness cost (workload array, dispatch) and the fact that 1-thread peek is already only about 1.7 ns.</li>
+<li><b>N has no effect on the stacks or queues</b> (within noise), as expected for O(1) operations. N only sets the prefill depth.</li>
+</ul>
+
+<h3>6.3 Queue: two-lock vs Michael-Scott</h3>
+<ul>
+<li>The same hot-spot behaviour appears. In the update-only workload, MSQueue falls from 38.6 MOPS (1 thread) to 8.2 MOPS (4 threads, speedup 0.21), and LockQueue falls from 29.7 to 17.8 MOPS (0.60).</li>
+<li><b>The two-lock queue wins under contention</b> (about 18 vs 8&ndash;10 MOPS update-only, about 33 vs 17 MOPS for 50C-25I-25D). Enqueuers and dequeuers synchronise on different locks and different cache lines, so the two ends genuinely proceed in parallel.
+In MSQueue, by contrast, every enqueue performs two CASes (link, then swing <code>tail</code>), dequeuers also read <code>tail</code>, and threads help advance a lagging tail. All of this generates extra CAS failures and shared-memory contention on <code>head</code>, <code>tail</code> and the last node.</li>
+<li>Uncontended, MSQueue is faster (38.6 vs 29.7 MOPS) because CAS is cheaper than lock + unlock. For read-only peek, LockQueue saturates higher (about 1,410 vs about 1,060 MOPS) because peek on a plain volatile <code>next</code> field needs one fewer dependent load than <code>AtomicReference.get()</code>.</li>
+<li>The GC-nepotism problem described in Section 2.6 is itself an HPC lesson. Before the fix, memory-management overhead dominated, and young GC pauses of more than 125 ms distorted every queue measurement.</li>
+</ul>
+
+<h3>6.4 Treiber vs elimination backoff stack</h3>
+<ul>
+<li><b>Elimination substantially reduces contention on the central stack.</b> From 8 to 16 threads, the update-only workload gives 34&ndash;41 MOPS for the elimination stack against 9.4&ndash;10.3 MOPS for the Treiber stack, i.e. <b>3.3&ndash;4.4&times; higher throughput</b>.
+For 50C-25I-25D, it gives 48&ndash;58 MOPS against 18&ndash;20 MOPS (about 2.5&ndash;3.1&times;). Results are almost identical for N=1,000 and N=10,000.</li>
+<li>The mechanism: when a CAS on <code>top</code> fails, the thread moves to a random exchanger slot instead of retrying immediately. There, a push and a pop cancel out with two or three CASes on a cache line that only those two threads touch.
+This spreads the traffic across 8 lines instead of 1, and every elimination removes two operations from the central stack.</li>
+<li>The benefit grows with the update fraction. Elimination needs complementary push/pop pairs, so 0C-50I-50D (50/50 push/pop) gains the most, while the read-only workload never fails a CAS and the two stacks are identical (about 1,540 MOPS).</li>
+<li>Elimination does not make the stack <i>scale</i>: its speedup is still below 1 (0.63&ndash;0.71 at 4&ndash;16 threads), because a single core running without contention remains the fastest configuration for an inherently sequential object.
+What elimination achieves is much more graceful degradation under contention, which is exactly the regime (8&ndash;16 threads) the assignment highlights. At 1 thread there is no contention, the backoff path is never taken, and the two stacks perform the same (57 vs 51 MOPS, within run-to-run noise).</li>
+</ul>
+
+<h3>6.5 Summary</h3>
+<ul>
+<li><b>Speedup saturation at p = 4</b> appears everywhere and is set by the hardware (4 cores). Beyond that, thread scheduling just time-slices the same 4 cores, and throughput stays flat rather than collapsing.</li>
+<li><b>Structures with distributed access</b> (lists) scale close to linearly until saturation. <b>Structures with a single hot spot</b> (stacks, queues) show negative speedup under updates, caused by CAS failures and cache-coherence traffic, and only read-only workloads scale.</li>
+<li><b>Lock-free is not automatically faster.</b> It avoids blocking and scales better in the lists, but its higher synchronization overhead per step (atomic wrappers, retries, helping) can make it slower than a well-designed lock-based structure, as the lists, the stacks under contention and the queues all show.
+Contention-reduction techniques such as elimination (or the two-lock split of the queue) matter more than the choice between locks and CAS.</li>
+</ul>
