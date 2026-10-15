@@ -3,3 +3,7 @@ bin/
 *.zip
 .DS_Store
 __pycache__/
+build/
+*.class
+run.log
+lockstep/report/report.html
