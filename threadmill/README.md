@@ -1,4 +1,4 @@
-# HPC Assignment 1, OpenMP
+# threadmill: five OpenMP kernels (HPC Assignment 1)
 
 Five parallel kernels in C11 + OpenMP, each with a sequential reference, a
 self-test, and a timing harness that refuses to report a runtime for a result
