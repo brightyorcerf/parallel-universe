@@ -1,0 +1,8 @@
+# java -XX:StartFlightRecording:settings=park.jfc ... Bench LockStack 1000 0C-50I-50D <t> 1 2000
+# parks include the 1 s warm-up at the same thread count; ops are the 2 s timed run only
+threads  ops        MOPS   parks
+1        62157824   31.08  2
+2        13437632    6.72  2076532
+3        33292992   16.65  805564
+4        32941504   16.47  768919
+8        34049792   17.02  788499
