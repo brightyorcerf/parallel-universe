@@ -33,7 +33,7 @@ def load(path, key_cols, val_col):
     return data
 
 
-def plot(data, ylabel, title, fname):
+def plot(data, ylabel, title, fname, shade_from=None):
     fig, axes = plt.subplots(1, 5, figsize=(22, 4.6), sharey=False)
     for ax, wl in zip(axes, WORKLOADS):
         for ds in DS:
@@ -51,6 +51,10 @@ def plot(data, ylabel, title, fname):
         for s in ("top", "right"):
             ax.spines[s].set_visible(False)
         ax.axvline(8, color="#9a9a96", linewidth=1, linestyle=":")  # hardware threads on the test machine
+        if shade_from:  # perf undercounts once hyperthreads share a core (README, measurement trap 5)
+            ax.axvspan(shade_from, 17, color="#efefec", zorder=0)
+            ax.text(shade_from + 0.3, 0.97, "SMT: undercounted", transform=ax.get_xaxis_transform(),
+                    fontsize=9, color="#6b6b67", va="top")
     axes[0].set_ylabel(ylabel)
     handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="upper center", ncol=4, frameon=False, fontsize=11, bbox_to_anchor=(0.5, 1.02))
@@ -79,7 +83,9 @@ if __name__ == "__main__":
         md.append("## Throughput (Mops/s, mean of 5 x 10 s runs)\n" + table(thr, "{:.2f}"))
     perf = load(RES / "perf_cache.csv", [0, 1, 2], 6)
     if perf:
-        plot(perf, "cache misses per million ops", "Cache misses per million operations (perf)", "cache_misses.png")
+        per_op = {k: v / 1e6 for k, v in perf.items()}
+        plot(per_op, "cache misses per op (= millions per million ops)", "Cache misses per operation (perf)",
+             "cache_misses.png", shade_from=5)
         md.append("## Cache misses per million operations\n" + table(perf, "{:,.0f}"))
     (RES / "tables.md").write_text("\n\n".join(md) + "\n")
     print(f"wrote {len(thr)} throughput points, {len(perf)} perf points")

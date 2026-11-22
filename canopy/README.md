@@ -153,14 +153,14 @@ saturation point on this machine. The 10–16 thread points show robustness, not
 extra scalability.
 
 AVL is the fastest in every workload. On a read-heavy mix it beats the BST by
-about 2× at 1 thread and 1.2–1.4× at 8 threads. Height matters more than anything
-else here. Lookups dominate every workload, and each tree level is roughly one
-cache miss on a 1M-node structure that is far larger than L2/L3. The AVL stays at
-depth ≈ 1.44 log₂ n (22 in the stress test), while the random BST and the treap
-average ~2.9 ln n and reach depth ~47–49. The AVL pays for rotations only on
-updates, and the logical-ordering design keeps readers lock-free during those
-rotations. So balance is nearly free for readers and the shallower tree wins
-everywhere.
+about 2× at 1 thread and 1.2–1.4× at 8 threads. An AVL lookup visits fewer
+nodes: the tree stays close to log₂ n deep (bound 1.44 log₂ n; 22 for 521K keys in
+the stress test), while a random BST averages about 2 ln n ≈ 28 levels and reaches
+47. The perf section below shows where the saving lands. It is not in L3
+misses, since BST and AVL miss L3 about equally often. It is in fewer L2 misses
+and a shorter chain of dependent loads. The AVL pays for rotations only on
+updates, and the logical-ordering design keeps readers lock-free during them, so
+balance is nearly free for readers.
 
 The gap narrows as writes grow. At 0C-50I-50D, AVL (6.0) is only about 4%
 ahead of the BST (5.8). Every successful update in the AVL walks up to rebalance,
@@ -170,7 +170,8 @@ threads are traversing. With uniform random keys the unbalanced BST is already
 
 The treap is the slowest tree. With uniform keys a treap has the same expected
 shape as the random BST, but it pays for priorities: rotate-up on every insert and
-rotate-down on every remove. It reaches 0.74–0.96× the BST's throughput. Its benefit
+rotate-down on every remove. It reaches 0.74–0.96× the BST's throughput, and perf
+shows it also misses L3 about twice as often (see the perf section). Its benefit
 (balance independent of insertion order) does not show with uniform random keys.
 It would show with sorted or skewed inserts, where the plain BST degenerates.
 
@@ -236,7 +237,17 @@ The treap misses about twice as often as the BST on read-heavy mixes (35.8 vs
 all three trees share one node type, so node size is not the cause. This matches
 its position as the slowest tree in the throughput results. Its extra misses
 shrink as the update share grows (40.3 vs 32.4 at 0C-50I-50D), because then all
-the trees pay for allocation. The cause was not isolated further.
+the trees pay for allocation. The cause was not measured. One explanation fits
+both this and the BST/AVL tie, but it is an untested hypothesis: allocation
+order. A BST is never rotated, so every node's ancestors were inserted before it.
+The upper levels are therefore the earliest allocations, which sit close together
+in memory where the TLB and hardware prefetchers serve them well. The AVL keeps
+most of that layout, because its rotations happen mostly near the leaves. A
+treap's shape is set by random priorities: the root is whichever node drew the
+highest priority, whenever it was inserted. So every level of a treap is spread
+across the whole node heap. To test it, prefill the BST in a shuffled allocation
+order (allocate all nodes, shuffle them, then link them) and see whether its
+misses rise to the treap's level.
 
 The skiplist touches the most memory, as expected: 2.5 to 3 times the BST's
 misses per op at 1 thread, and about 2 times the references. A search visits
