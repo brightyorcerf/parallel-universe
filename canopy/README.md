@@ -18,7 +18,7 @@ scripts/plot.py        plots + tables                        -> results/*.png, r
 ## Build and run
 
 ```bash
-make                       # g++ >= 13 (or clang >= 17), -std=c++23 -O3
+make                       # g++ >= 11 (13+ preferred) or clang >= 17, -std=c++23 -O3
 ./bench test               # correctness stress test: all four structures, 16 threads
 ./bench avl 8 50 25        # one config: AVL, 8 threads, 50C-25I-25D, 5 x 10 s
 scripts/run_all.sh         # all 180 configs (~2.7 h); resumable
@@ -195,10 +195,141 @@ on a dedicated Linux machine would tighten them.
 
 ### Cache misses per million operations (perf)
 
-Not measured yet. `perf` needs Linux, and the throughput sweep ran on Windows.
-The cache-miss sweep will run on the same laptop booted into Ubuntu (bare metal)
-with `scripts/perf_cache.sh`. `CLAUDE.md` in this folder has the step-by-step
-handoff for that session.
+Test machine: the same laptop (Intel Core i7-1165G7, 4 cores / 8 hardware
+threads, 12 MB L3) booted into Ubuntu 22.04 on bare metal, kernel
+5.15.0-1109-intel-iotg, perf 5.15, GCC 11.4 `-O3 -march=native`, on AC power
+with the performance power profile. `cache-misses` and `cache-references` are
+the generic perf events, which on this CPU count last-level (L3) misses and
+references. Counting covers only the timed phase of each run: the harness
+enables and disables the counters through perf's `--control` fds, so prefill
+and teardown are excluded. Each config was run once for 10 s (1 run, not 5),
+so these numbers carry more noise than the throughput table. The same sweep
+also wrote Linux throughput to `results/throughput_linux.csv`, kept for
+reference only. The Windows numbers above remain the reported throughput.
+
+![cache misses](results/cache_misses.png)
+
+Read the 1 to 4 thread points. At 6 threads and above, some threads share a
+physical core, and perf then undercounts by about 2 times (measured directly,
+see measurement trap 5). That is why every curve drops between 4 and 8 threads and
+then goes flat: the drop is an artifact of the counter, not fewer misses.
+Comparisons between structures at the same thread count are still fair, since
+the artifact hits all four the same way, but the absolute values above 4
+threads should not be used.
+
+Misses per operation, 100C-0I-0D at 1 thread: BST 17.7, AVL 18.2, treap 35.8,
+skiplist 49.2. At 0C-50I-50D: BST 32.4, AVL 33.5, treap 40.3, skiplist 64.5.
+
+Tree depth does not explain the BST vs AVL gap. The expectation was that the
+AVL, at about half the BST's depth, would miss least. It does not: BST and AVL
+are within 10% of each other in every workload at 1 to 4 threads, and the BST is
+often slightly lower. Yet the AVL is about 2 times faster on read-only work at 1
+thread. So the AVL's lead does not come from fewer L3 misses. The data points
+to the cheaper levels instead. The AVL makes fewer L3 references per operation
+(39 vs 44 on 100C at 1 thread), meaning fewer L2 misses, and a shorter chain of
+dependent loads, so the misses that do happen overlap more. The deep part of the
+BST is mostly made of nodes near the top that stay cached, and both trees miss
+on roughly the same number of cold nodes near the bottom.
+
+The treap misses about twice as often as the BST on read-heavy mixes (35.8 vs
+17.7 per op) even though, with uniform keys, it has the same expected shape and
+all three trees share one node type, so node size is not the cause. This matches
+its position as the slowest tree in the throughput results. Its extra misses
+shrink as the update share grows (40.3 vs 32.4 at 0C-50I-50D), because then all
+the trees pay for allocation. The cause was not isolated further.
+
+The skiplist touches the most memory, as expected: 2.5 to 3 times the BST's
+misses per op at 1 thread, and about 2 times the references. A search visits
+about two nodes per level over roughly 20 levels, and each tower is a separate
+allocation. It still keeps up in read-heavy throughput, because its wait-free
+`contains` takes no locks and the misses at different levels are partly
+independent.
+
+Updates add misses. At 1 thread, where there is no sharing at all, going from
+100C to 0C-50I-50D almost doubles the misses per op for BST (17.7 to 32.4) and
+AVL (18.2 to 33.5). That cost comes from allocating fresh nodes, freeing old ones
+through epoch reclamation, and writing lock words, not from coherence.
+Coherence misses do not show up here: from 1 to 4 threads the update-heavy
+misses per op stay flat or fall slightly (AVL 0C-50I-50D: 33.5, 31.3, 29.6). On
+this single-socket CPU a line moving between cores is served by the shared L3,
+so it never counts as an L3 miss. Measuring coherence traffic would need
+core-to-core events (for example HITM snoops), which these generic events do
+not include.
+
+#### Cache misses per million operations, full table
+
+1 run of 10 s per config. Values at 6 threads and above are undercounted
+(measurement trap 5).
+
+##### 100C-0I-0D
+
+| threads | BST | AVL | Treap | Skiplist |
+|---:|---:|---:|---:|---:|
+| 1 | 17,738,502 | 18,244,111 | 35,831,558 | 49,217,763 |
+| 2 | 16,872,825 | 17,905,882 | 31,322,256 | 47,105,800 |
+| 4 | 15,228,009 | 16,860,270 | 28,005,983 | 36,275,525 |
+| 6 | 10,080,357 | 11,308,414 | 16,503,482 | 22,910,317 |
+| 8 | 6,814,832 | 6,409,526 | 8,963,307 | 16,342,621 |
+| 10 | 7,261,146 | 6,595,487 | 8,704,332 | 15,297,909 |
+| 12 | 6,902,052 | 6,496,604 | 8,839,636 | 15,211,457 |
+| 14 | 6,854,601 | 6,435,688 | 8,785,335 | 15,907,771 |
+| 16 | 6,698,460 | 6,456,285 | 9,217,050 | 14,601,077 |
+
+##### 90C-9I-1D
+
+| threads | BST | AVL | Treap | Skiplist |
+|---:|---:|---:|---:|---:|
+| 1 | 19,251,320 | 20,434,836 | 36,502,639 | 57,248,600 |
+| 2 | 20,077,230 | 21,063,053 | 34,818,810 | 55,959,241 |
+| 4 | 20,156,236 | 20,863,878 | 32,226,789 | 49,960,910 |
+| 6 | 13,417,969 | 13,851,965 | 19,904,737 | 31,651,933 |
+| 8 | 8,500,938 | 7,700,895 | 10,473,977 | 19,822,539 |
+| 10 | 8,422,560 | 7,643,952 | 10,594,420 | 19,835,697 |
+| 12 | 8,623,885 | 7,616,773 | 10,842,281 | 19,054,356 |
+| 14 | 8,730,492 | 7,669,554 | 11,282,642 | 20,648,342 |
+| 16 | 8,674,411 | 7,640,570 | 11,473,010 | 21,036,909 |
+
+##### 50C-25I-25D
+
+| threads | BST | AVL | Treap | Skiplist |
+|---:|---:|---:|---:|---:|
+| 1 | 30,014,997 | 27,087,234 | 41,279,142 | 63,997,686 |
+| 2 | 29,873,247 | 27,390,300 | 36,766,168 | 56,132,376 |
+| 4 | 28,336,109 | 26,212,072 | 30,406,374 | 44,243,884 |
+| 6 | 17,298,782 | 16,457,877 | 16,788,548 | 24,084,222 |
+| 8 | 8,420,511 | 8,860,301 | 10,529,230 | 17,237,960 |
+| 10 | 8,952,223 | 8,991,869 | 10,684,650 | 16,875,572 |
+| 12 | 9,020,102 | 9,464,889 | 10,602,696 | 17,120,098 |
+| 14 | 9,087,735 | 10,946,241 | 10,779,590 | 17,297,585 |
+| 16 | 9,244,137 | 10,238,294 | 11,096,318 | 16,807,192 |
+
+##### 30C-35I-35D
+
+| threads | BST | AVL | Treap | Skiplist |
+|---:|---:|---:|---:|---:|
+| 1 | 30,476,275 | 31,989,785 | 40,889,051 | 63,300,349 |
+| 2 | 31,200,596 | 30,226,391 | 36,502,351 | 56,605,275 |
+| 4 | 29,387,132 | 27,265,246 | 32,535,464 | 48,102,191 |
+| 6 | 17,743,318 | 16,183,750 | 19,294,289 | 25,694,155 |
+| 8 | 8,724,254 | 9,681,709 | 10,586,632 | 17,359,963 |
+| 10 | 9,463,943 | 10,309,902 | 11,737,443 | 17,566,294 |
+| 12 | 9,547,331 | 10,612,058 | 11,939,535 | 17,623,004 |
+| 14 | 9,624,898 | 10,724,420 | 12,024,544 | 18,284,652 |
+| 16 | 9,530,470 | 10,505,453 | 11,480,940 | 18,776,454 |
+
+##### 0C-50I-50D
+
+| threads | BST | AVL | Treap | Skiplist |
+|---:|---:|---:|---:|---:|
+| 1 | 32,375,925 | 33,458,415 | 40,327,369 | 64,485,830 |
+| 2 | 32,420,946 | 31,327,404 | 36,493,453 | 58,038,374 |
+| 4 | 30,773,367 | 29,629,638 | 30,784,988 | 47,716,007 |
+| 6 | 18,874,265 | 18,846,804 | 20,266,448 | 26,808,025 |
+| 8 | 9,275,577 | 10,309,458 | 12,342,674 | 16,299,900 |
+| 10 | 10,291,043 | 11,417,651 | 12,846,198 | 18,412,997 |
+| 12 | 10,370,207 | 12,094,738 | 12,625,382 | 18,676,906 |
+| 14 | 10,308,199 | 11,804,254 | 12,237,146 | 18,430,753 |
+| 16 | 10,176,674 | 11,364,581 | 12,645,457 | 18,095,775 |
 
 ### Full throughput table
 
@@ -276,7 +407,7 @@ Mops/s, mean of 5 × 10 s runs.
 
 ## Measurement traps
 
-Four things corrupted early numbers. All were caught by reading the data, not by the harness.
+Five things corrupted early numbers. All were caught by reading the data, not by the harness.
 
 1. Battery power. The first full sweep ran unplugged on the Balanced plan.
    Windows throttled the CPU, so the numbers came out 2 to 3 times too low and
@@ -295,3 +426,16 @@ Four things corrupted early numbers. All were caught by reading the data, not by
    one run fell to a third of its siblings' throughput. Any run below 50% of its
    config's mean is now treated as disturbed and its config is re-run. The final
    CSV has none.
+5. Hyper-threading undercounts perf events. In the cache-miss sweep, misses per
+   op fell by 2 to 3 times between 4 and 8 threads for every structure, right
+   where threads start sharing physical cores. A direct test exposed it, using
+   independent single-threaded AVL runs (1M-key prefill, then 4 s of reads)
+   pinned with `taskset`. The prefill alone, identical work in every case,
+   recorded 30M misses on its own but 18M per run when two runs shared one
+   core's two hyperthreads. In the timed phase, two runs on separate cores
+   showed 25.7 misses per op, and two runs on sibling hyperthreads 12.5.
+   Sharing a core can only add misses, so the counter is missing about half
+   the events whenever both hyperthreads of a core are busy. The 1 to 4 thread
+   counts are therefore trusted, and the 6 to 16 thread counts are only
+   compared with each other. A clean high-thread measurement would need SMT
+   disabled, which caps the machine at 4 threads.
