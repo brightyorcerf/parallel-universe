@@ -7,7 +7,8 @@ structures, each measured carefully enough that the numbers mean something.
 |---|---|---|
 | [threadmill](threadmill/) | five OpenMP kernels (A², X¹⁵, sorting, primes in [2⁴⁰, 2⁴¹), dot product) with algorithmic shortcuts, sequential twins and checksum verification | C11 + OpenMP |
 | [lockstep](lockstep/) | lazy vs lock-free lists, stacks, queues and an elimination backoff stack, 1,890 timed runs from 1 to 16 threads | Java 17 |
+| [canopy](canopy/) | concurrent BST, AVL tree, treap (one logical-ordering core) and lazy skiplist with epoch-based reclamation, 900 timed runs from 1 to 16 threads | C++23 |
 
-Each project is self-contained: its own build, scripts, raw results, gnuplot
-figures and report. Both READMEs end with the measurement traps that were hit
+Each project is self-contained: its own build, scripts, raw results, figures
+and report. Each README ends with the measurement traps that were hit
 along the way, since those are the parts most worth reading.

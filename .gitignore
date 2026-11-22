@@ -7,3 +7,5 @@ build/
 *.class
 run.log
 lockstep/report/report.html
+canopy/bench
+canopy/bench.exe
