@@ -90,7 +90,7 @@ class LoTree {
       c->treeLock.lock();
       if (!ld(c == p ? p->right : s->left)) return c;
       c->treeLock.unlock();
-      cpu_relax();  // a removed node between p and s is still being unlinked
+      backoff();  // a removed node between p and s is still being unlinked; let its remover run
     }
   }
 

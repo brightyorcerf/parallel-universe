@@ -24,6 +24,7 @@ make                       # g++ >= 11 (13+ preferred) or clang >= 17, -std=c++2
 ./bench avl 8 50 25        # one config: AVL, 8 threads, 50C-25I-25D, 5 x 10 s
 scripts/run_all.sh         # all 180 configs (~2.7 h); resumable
 scripts/perf_cache.sh      # Linux: same sweep under perf stat (~2.7 h); resumable
+scripts/smt_check.sh       # Linux: SMT perf-undercount experiment (measurement trap 5)
 python3 scripts/plot.py
 ```
 
@@ -175,6 +176,13 @@ The throughput and perf data below were measured with the code before these
 fixes. Both races need a removal and a concurrent operation on the same key, or
 on an already removed node, within a short window. The fixes add a mark check
 on a node that is already in cache, plus a slightly longer delay before freeing.
+Two smaller fixes came with these. The skiplist's per-level `next` pointers
+are now separately constructed objects after the node, not an over-indexed
+one-element array, which was formally undefined behavior. And `choose_parent`
+now yields rather than spins while a removed node between `pred` and `succ` is
+still being unlinked, so it cannot starve the treap's rotate-down that it is
+waiting on.
+
 3-second spot checks of the old and new builds agree within run-to-run noise:
 
 | config | old build | fixed build |
@@ -522,8 +530,10 @@ Five things corrupted early numbers. All were caught by reading the data, not by
    showed 25.7 misses per op, and two runs on sibling hyperthreads 12.5.
    Siblings share L1 and L2, so if anything they should miss more often, not
    half as often. The counter is therefore missing about half the events
-   whenever both hyperthreads of a core are busy. This experiment was run by
-   hand during the Linux session, and its commands are not in the repo. The 1 to 4 thread
+   whenever both hyperthreads of a core are busy. The numbers above come from
+   a hand run during the Linux session. `scripts/smt_check.sh` reproduces the
+   same experiment (solo, two separate cores, two sibling hyperthreads) and
+   writes `results/smt_check.txt`. The 1 to 4 thread
    counts are therefore trusted, and the 6 to 16 thread counts are only
    compared with each other. A clean high-thread measurement would need SMT
    disabled, which caps the machine at 4 threads.
