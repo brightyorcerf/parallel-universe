@@ -153,9 +153,46 @@ bool stress(const char* name, int threads, int range, double secs) {
     expect += s == 1;
   }
   auto c = ds.validate();
+  bool members_ok = ok;
   ok = ok && c.ok && c.size == expect;
   std::printf("%-9s threads=%-2d range=%-8d size=%-8zu depth=%-4zu violations=%-6zu %s\n", name, threads, range,
               c.size, c.depth, c.violations, ok ? "PASS" : "FAIL");
+  if (!ok)
+    std::printf("          expected size=%zu  structure=%s  membership=%s\n", expect, c.ok ? "ok" : "BROKEN",
+                members_ok ? "ok" : "WRONG");
+  return ok;
+}
+
+// Regression: a removed node still in the tree ("zombie") must not hide a
+// re-inserted copy of its key. Thread A is frozen inside remove(512) between the
+// logical and the physical unlink; thread B re-inserts 512; contains(512) must
+// then see it. Keys are inserted in level order, so in the BST/AVL 512 is the
+// root and has two children, which puts the new copy below the zombie.
+inline std::atomic<int> g_zombie_stage{0};
+template <class DS>
+bool zombie_test(const char* name) {
+  constexpr int kVictim = 512;
+  DS ds;
+  for (int step = 512; step >= 1; step /= 2)
+    for (int k = step; k < 1024; k += 2 * step) ds.insert(k);
+  g_zombie_stage = 0;
+  DS::after_unlink_hook = [](int k) {
+    if (k != kVictim) return;
+    g_zombie_stage = 1;
+    while (g_zombie_stage.load() != 2) std::this_thread::yield();
+  };
+  std::thread a([&] { tid = 1; ds.remove(kVictim); });
+  while (g_zombie_stage.load() != 1) std::this_thread::yield();
+  std::thread b([&] { tid = 2; ds.insert(kVictim); });
+  bool seen = false;
+  for (auto end = Clock::now() + std::chrono::milliseconds(500); !seen && Clock::now() < end;)
+    seen = ds.contains(kVictim);
+  g_zombie_stage = 2;
+  a.join();
+  b.join();
+  DS::after_unlink_hook = nullptr;
+  bool ok = seen && ds.contains(kVictim) && ds.validate().ok;
+  std::printf("%-9s zombie re-insert visible to contains                       %s\n", name, ok ? "PASS" : "FAIL");
   return ok;
 }
 
@@ -168,8 +205,13 @@ bool stress_all(const char* name) {
 
 int main(int argc, char** argv) {
   if (argc >= 2 && !std::strcmp(argv[1], "test")) {
-    bool ok = stress_all<ConcurrentBst>("bst") & stress_all<ConcurrentAvl>("avl") &
-              stress_all<ConcurrentTreap>("treap") & stress_all<ConcurrentSkiplist>("skiplist");
+    const char* only = argc > 2 ? argv[2] : "";  // optional: test one structure
+    auto want = [&](const char* n) { return !*only || !std::strcmp(only, n); };
+    bool ok = true;
+    if (want("bst")) ok &= stress_all<ConcurrentBst>("bst") & zombie_test<ConcurrentBst>("bst");
+    if (want("avl")) ok &= stress_all<ConcurrentAvl>("avl") & zombie_test<ConcurrentAvl>("avl");
+    if (want("treap")) ok &= stress_all<ConcurrentTreap>("treap") & zombie_test<ConcurrentTreap>("treap");
+    if (want("skiplist")) ok &= stress_all<ConcurrentSkiplist>("skiplist");
     std::puts(ok ? "ALL PASS" : "FAILURES");
     return ok ? 0 : 1;
   }

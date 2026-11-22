@@ -46,8 +46,11 @@ struct SpinLock {
 };
 
 // Epoch-based reclamation. A node retired while the global epoch is e is freed
-// once the epoch reaches e + 2: by then every thread that could have seen it
-// has left its critical section.
+// once the epoch reaches e + 3. Plain EBR uses e + 2, which assumes a retired node
+// is unreachable. Here a removed tree node that is still physically linked keeps
+// pred pointers to nodes removed after it, so a reader can reach a node one epoch
+// later than plain EBR allows. Every such node was live after the remover entered
+// (epoch >= its e_r) and the reader entered at <= e_r + 1, so e + 3 covers it.
 class Ebr {
   static constexpr uint64_t kIdle = ~0ull;
   struct alignas(64) Slot {
@@ -69,7 +72,7 @@ class Ebr {
   void reclaim(Slot& s) {
     uint64_t e = epoch_.load();
     size_t i = 0;
-    while (i < s.limbo.size() && s.limbo[i].first + 2 <= e) free_(s.limbo[i++].second);
+    while (i < s.limbo.size() && s.limbo[i].first + 3 <= e) free_(s.limbo[i++].second);
     s.limbo.erase(s.limbo.begin(), s.limbo.begin() + i);
   }
 

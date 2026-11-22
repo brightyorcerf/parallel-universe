@@ -239,6 +239,9 @@ class LoTree {
   }
 
  public:
+  // Test-only: called by remove() after the logical unlink, before the physical one.
+  static inline void (*after_unlink_hook)(int key) = nullptr;
+
   LoTree() {
     head_ = new Node(INT_MIN, UINT32_MAX);
     tail_ = new Node(INT_MAX, UINT32_MAX);
@@ -260,9 +263,17 @@ class LoTree {
   bool contains(int k) {
     Ebr::Guard g(ebr_);
     Node* n = search(k);
-    while (n->key > k) n = ld(n->pred);
-    while (n->key < k) n = ld(n->succ);
-    return n->key == k && !marked(n);
+    if (n->key == k && !marked(n)) return true;  // unmarked => still in the list
+    // n may be a removed node that is still in the tree while a new copy of k
+    // was inserted elsewhere, so answer from the list instead: a successor read
+    // from a node that is unmarked afterwards was its true successor at that read.
+    while (n->key >= k) n = ld(n->pred);
+    for (;;) {
+      if (marked(n)) { n = ld(n->pred); continue; }
+      Node* s = ld(n->succ);
+      if (s->key < k) { n = s; continue; }
+      if (!marked(n)) return s->key == k;
+    }
   }
 
   bool insert(int k) {
@@ -307,6 +318,7 @@ class LoTree {
       st(p->succ, ss);  // linearization point
       s->succLock.unlock();
       p->succLock.unlock();
+      if (after_unlink_hook) after_unlink_hook(k);
       if constexpr (B == Balance::Treap) {
         rotate_down_and_splice(s);
       } else {
@@ -335,7 +347,7 @@ class LoTree {
       auto [n, nd] = stack.back();
       stack.pop_back();
       r.depth = std::max(r.depth, nd);
-      if (n != list || marked(n) || ld(list->pred)->succ != list) r.ok = false;
+      if (n != list || marked(n) || ld(list->pred)->succ != list || ld(list->pred)->key >= n->key) r.ok = false;
       for (Node* c : {ld(n->left), ld(n->right)}) {
         if (c && ld(c->parent) != n) r.ok = false;
         if constexpr (B == Balance::Treap)

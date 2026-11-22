@@ -19,7 +19,8 @@ scripts/plot.py        plots + tables                        -> results/*.png, r
 
 ```bash
 make                       # g++ >= 11 (13+ preferred) or clang >= 17, -std=c++23 -O3
-./bench test               # correctness stress test: all four structures, 16 threads
+./bench test               # correctness tests: all four structures, 16 threads
+./bench test treap         # ... or just one structure
 ./bench avl 8 50 25        # one config: AVL, 8 threads, 50C-25I-25D, 5 x 10 s
 scripts/run_all.sh         # all 180 configs (~2.7 h); resumable
 scripts/perf_cache.sh      # Linux: same sweep under perf stat (~2.7 h); resumable
@@ -66,12 +67,14 @@ The three trees differ only in physical maintenance:
 | Treap | same, then rotate up while priority > parent's | mark + unlink from the list, then rotate the node down below its higher-priority child until it has ≤ 1 child, then splice |
 
 The AVL tree uses *relaxed* balance, as concurrent AVL trees usually do: heights
-are read without locks and fixed by later rebalances. The stress test still finds
-0 balance violations at quiescence, with depth 22 for 521K keys (log₂ n ≈ 19).
-The treap's heap order is also relaxed. In rare interleavings a node finishes its
-upward rotations just before an ancestor rotates, which leaves a priority
-inversion: 1 inversion in a 30-node treap under extreme contention, 0 at
-realistic sizes. This affects only shape, never correctness.
+are read without locks and fixed by later rebalances. In every stress run so far
+it has had 0 balance violations at quiescence, with depth 22–23 for ~524K keys
+(log₂ n ≈ 19). The treap's heap order is also relaxed. In rare interleavings a
+node finishes its upward rotations just before an ancestor rotates, which leaves
+a priority inversion: at most 1 inversion per run at 64 and 4096 keys, 0 at 1M
+keys. Both are design choices. Balance and heap order affect only shape and
+speed, never which keys are in the set. So the stress test reports them (the
+`violations` and `depth` columns) but does not fail on them.
 
 ### Skiplist: lazy skiplist (Herlihy, Lev, Luchangco, Shavit, 2007)
 
@@ -83,9 +86,13 @@ so a node costs exactly its own levels.
 ### Memory reclamation
 
 Removed nodes go to epoch-based reclamation. A node retired while the global
-epoch is *e* is freed once the epoch reaches *e + 2*, after every thread that could
-still hold a pointer to it has left its operation. Without this, a 10-second
-write-heavy run would leak several GB.
+epoch is *e* is freed once the epoch reaches *e + 3*, after every thread that could
+still hold a pointer to it has left its operation. Textbook EBR waits until
+*e + 2*. That is not enough here, because a removed tree node that is still
+physically linked keeps `pred` pointers to nodes removed after it, so a reader can
+reach a node one epoch later than plain EBR assumes. See "Bugs found after the
+benchmarks" below. Without reclamation, a 10-second write-heavy run would leak
+several GB.
 
 ### Harness
 
@@ -96,7 +103,12 @@ write-heavy run would leak several GB.
 * `perf stat` starts disabled (`-D -1`). The harness enables counting just before
   the workers start and disables it right after they join, over perf's
   `--control` fds, so prefill and teardown are excluded. Misses per million ops =
-  cache-misses ÷ (total ops across the 5 runs ÷ 10⁶).
+  cache-misses ÷ (total ops across all runs of that config ÷ 10⁶). The perf sweep
+  used 1 run per config, see the perf section.
+* The 90C-9I-1D mix is not stationary. Inserts outnumber removes 9 to 1, so
+  during a run the set grows from 1M toward about 1.8M keys: it settles where
+  successful inserts equal successful removes, 0.09 (1 − f) = 0.01 f, so f = 0.9.
+  The other four mixes keep the set at 1M.
 
 ## Correctness
 
@@ -111,21 +123,66 @@ records, per key, its successful inserts minus successful removes. Afterwards:
   subset of the levels below.
 * Structure size == number of keys with balance 1.
 
+A second, deterministic test targets one specific race. It freezes a thread
+inside `remove(512)`, between the logical and the physical unlink. It then
+re-inserts 512 from another thread and requires `contains(512)` to see the new
+copy.
+
 ```
-bst       threads=16 range=64       size=36       depth=10   violations=0      PASS
-bst       threads=16 range=4096     size=1991     depth=46   violations=0      PASS
-bst       threads=16 range=1048576  size=523865   depth=47   violations=0      PASS
-avl       threads=16 range=64       size=33       depth=6    violations=0      PASS
-avl       threads=16 range=4096     size=2080     depth=13   violations=0      PASS
-avl       threads=16 range=1048576  size=521313   depth=22   violations=0      PASS
-treap     threads=16 range=64       size=30       depth=9    violations=1      PASS
-treap     threads=16 range=4096     size=2032     depth=25   violations=0      PASS
-treap     threads=16 range=1048576  size=516577   depth=49   violations=0      PASS
-skiplist  threads=16 range=64       size=29       depth=9    violations=0      PASS
-skiplist  threads=16 range=4096     size=2079     depth=11   violations=0      PASS
-skiplist  threads=16 range=1048576  size=521496   depth=19   violations=0      PASS
+bst       threads=16 range=64       size=37       depth=7    violations=0      PASS
+bst       threads=16 range=4096     size=2071     depth=44   violations=0      PASS
+bst       threads=16 range=1048576  size=523370   depth=45   violations=0      PASS
+bst       zombie re-insert visible to contains                       PASS
+avl       threads=16 range=64       size=30       depth=6    violations=0      PASS
+avl       threads=16 range=4096     size=2048     depth=13   violations=0      PASS
+avl       threads=16 range=1048576  size=524108   depth=22   violations=0      PASS
+avl       zombie re-insert visible to contains                       PASS
+treap     threads=16 range=64       size=27       depth=7    violations=1      PASS
+treap     threads=16 range=4096     size=2039     depth=21   violations=1      PASS
+treap     threads=16 range=1048576  size=524266   depth=45   violations=0      PASS
+treap     zombie re-insert visible to contains                       PASS
+skiplist  threads=16 range=64       size=30       depth=8    violations=0      PASS
+skiplist  threads=16 range=4096     size=1999     depth=11   violations=0      PASS
+skiplist  threads=16 range=1048576  size=524776   depth=20   violations=0      PASS
 ALL PASS
 ```
+
+### Bugs found after the benchmarks
+
+An external review and repeated stress runs found two races in the tree code.
+Both are fixed and covered by tests.
+
+1. `contains` could miss a re-inserted key. `search` stops at the first tree
+   node holding the key. That node can be a "zombie": already removed from the
+   list but not yet from the tree, while a new copy of the same key has been
+   inserted below it. The old `contains` then answered from the zombie and
+   returned false for a key that was present. The fix answers from the list:
+   it reads `succ` only from a node that is still unmarked afterwards, which
+   makes that read the true successor at that moment. The zombie test above
+   fails on the old code for BST and AVL (the treap's random shape avoided it)
+   and passes now.
+2. Memory reclamation freed nodes one epoch too early (see Memory
+   reclamation). A reader standing on a zombie could follow its stale `pred`
+   pointer into freed memory, and even lock a node whose memory had been
+   reused, which breaks mutual exclusion on the list. Under extreme contention
+   (16 threads, 4096 keys) the treap failed the stress test in 3 of 18 runs:
+   the list held keys that the insert/remove history said were gone. The treap
+   hits this most because its zombies live longest while they rotate down.
+   With the extra epoch it failed in 0 of 20 runs; at the old rate about 3
+   failures were expected, and 0 by luck has about a 3% chance.
+
+The throughput and perf data below were measured with the code before these
+fixes. Both races need a removal and a concurrent operation on the same key, or
+on an already removed node, within a short window. The fixes add a mark check
+on a node that is already in cache, plus a slightly longer delay before freeing.
+3-second spot checks of the old and new builds agree within run-to-run noise:
+
+| config | old build | fixed build |
+|---|---:|---:|
+| AVL 8 threads 50C-25I-25D | 7.91 | 7.63 |
+| treap 8 threads 50C-25I-25D | 5.37 | 5.45 |
+| BST 8 threads 100C-0I-0D | 8.30 | 8.30 |
+| AVL 1 thread 100C-0I-0D | 2.72 | 2.73 |
 
 ## Results
 
@@ -170,18 +227,23 @@ threads are traversing. With uniform random keys the unbalanced BST is already
 
 The treap is the slowest tree. With uniform keys a treap has the same expected
 shape as the random BST, but it pays for priorities: rotate-up on every insert and
-rotate-down on every remove. It reaches 0.74–0.96× the BST's throughput, and perf
+rotate-down on every remove. It reaches 0.74–0.97× the BST's throughput, and perf
 shows it also misses L3 about twice as often (see the perf section). Its benefit
 (balance independent of insertion order) does not show with uniform random keys.
 It would show with sorted or skewed inserts, where the plain BST degenerates.
 
-The skiplist is competitive on read-heavy mixes (second at 1–8 threads in
-100C), thanks to wait-free `contains` and towers that make search paths short.
-It is the most fragile on write-heavy mixes past 8 threads (30C-35I-35D drops from
-5.96 to 4.36–5.38). An insert locks up to `top+1` predecessors and a remove holds
-the victim's lock while it retries. When the OS preempts a thread holding those
-locks (oversubscription), the threads behind it stall. The trees lock only 1–4
-nodes per update, so they degrade more gracefully.
+The skiplist is competitive on read-heavy mixes on Windows (second at 1–8
+threads in 100C), thanks to wait-free `contains` and towers that make search
+paths short. That ranking depends on the platform: in the Linux runs
+(`results/throughput_linux.csv`, GCC 11) it falls behind the BST (1.26 vs 1.49
+Mops/s at 1 thread). It is also the least steady on the write-heavy 30C-35I-35D
+mix. It dips at 6 threads (3.91, below the 4-to-8-thread trend of 3.77 → 5.96)
+and again past 8 threads (4.36–5.38), and these configs have the highest
+run-to-run variation of any skiplist config (10% at 6 threads, 14% at 12). An
+insert locks up to `top+1` predecessors and a remove holds the victim's lock
+while it retries. Past 8 threads, preemption of a lock holder stalls everyone
+queued behind it. That cannot explain the 6-thread dip, though, since the
+machine is not oversubscribed there. The cause of that dip was not isolated.
 
 Read-only vs update mixes. Throughput falls as the update ratio rises for
 every structure (AVL at 8 threads: 10.9 → 9.2 → 7.2 → 6.7 → 6.0 Mops/s). Updates
@@ -189,10 +251,16 @@ take locks, allocate and reclaim nodes, and write shared cache lines that other
 cores then miss on.
 
 Noise. Most configs have a coefficient of variation below 5% across the 5
-runs. Exceptions: BST 100C at 1 thread (21%) and skiplist 0C-50I-50D at 1 thread
-(17%), plus a BST 100C step up at 14–16 threads. All of these are consistent
-with Windows background activity and turbo boost on a laptop. Pinning threads
-on a dedicated Linux machine would tighten them.
+runs. Six exceed 10%: BST 100C at 1, 2 and 4 threads (21%, 13%, 10%), skiplist
+0C-50I-50D at 1 thread (19%), and skiplist 30C-35I-35D at 6 and 12 threads (10%,
+14%). The two 1-thread outliers are a trend, not scatter. Throughput rises
+almost every run (BST 100C: 1.05 → 1.27 → 1.68 → 1.73 → 1.73; skiplist 0C:
+0.65 → 1.08), which looks like warm-up (CPU frequency or allocator state). It
+lowers those 1-thread means and so inflates their speedups: BST 100C scales 5.2×
+from 1 to 8 threads using the mean, but 4.5× against its last, warm runs. There
+is also a BST 100C step up at 14–16 threads. All of this is consistent with a
+laptop's turbo and background activity. An untimed warm-up phase per run and
+pinned threads on a dedicated machine would tighten it.
 
 ### Cache misses per million operations (perf)
 
@@ -207,6 +275,13 @@ and teardown are excluded. Each config was run once for 10 s (1 run, not 5),
 so these numbers carry more noise than the throughput table. The same sweep
 also wrote Linux throughput to `results/throughput_linux.csv`, kept for
 reference only. The Windows numbers above remain the reported throughput.
+
+Throughput and cache misses come from different setups: Windows with GCC 14,
+and Linux with GCC 11. Linux throughput is within about 20% for the BST and AVL, but 25–45%
+lower for the treap and skiplist (treap 100C at 1 thread: 0.90 vs 1.23 Mops/s).
+So the analysis below links misses to throughput only through rankings that hold
+on both platforms. The AVL is fastest and the treap the slowest tree on both. The
+skiplist's place relative to the BST is the one ranking that differs.
 
 ![cache misses](results/cache_misses.png)
 
@@ -223,7 +298,7 @@ skiplist 49.2. At 0C-50I-50D: BST 32.4, AVL 33.5, treap 40.3, skiplist 64.5.
 
 Tree depth does not explain the BST vs AVL gap. The expectation was that the
 AVL, at about half the BST's depth, would miss least. It does not: BST and AVL
-are within 10% of each other in every workload at 1 to 4 threads, and the BST is
+are within 11% of each other in every workload at 1 to 4 threads, and the BST is
 often slightly lower. Yet the AVL is about 2 times faster on read-only work at 1
 thread. So the AVL's lead does not come from fewer L3 misses. The data points
 to the cheaper levels instead. The AVL makes fewer L3 references per operation
@@ -445,8 +520,10 @@ Five things corrupted early numbers. All were caught by reading the data, not by
    recorded 30M misses on its own but 18M per run when two runs shared one
    core's two hyperthreads. In the timed phase, two runs on separate cores
    showed 25.7 misses per op, and two runs on sibling hyperthreads 12.5.
-   Sharing a core can only add misses, so the counter is missing about half
-   the events whenever both hyperthreads of a core are busy. The 1 to 4 thread
+   Siblings share L1 and L2, so if anything they should miss more often, not
+   half as often. The counter is therefore missing about half the events
+   whenever both hyperthreads of a core are busy. This experiment was run by
+   hand during the Linux session, and its commands are not in the repo. The 1 to 4 thread
    counts are therefore trusted, and the 6 to 16 thread counts are only
    compared with each other. A clean high-thread measurement would need SMT
    disabled, which caps the machine at 4 threads.
